@@ -210,60 +210,80 @@ io.on('connection', (socket) => {
     console.log(`❌ Participant ${participantId} refusé pour l'appel ${callCode}`);
   });
 
-  // Envoyer une offre WebRTC
-  socket.on('send-offer', ({ callCode, offer }) => {
-    console.log(`📤 Offre WebRTC reçue pour l'appel ${callCode} de ${socket.id}`);
+  // Envoyer une offre WebRTC - MODIFIÉ
+socket.on('send-offer', ({ callCode, offer }) => {
+  console.log(`📤 Offre WebRTC reçue pour l'appel ${callCode} de ${socket.id}`);
+  
+  const callData = activeCalls.get(callCode);
+  if (callData && callData.participants.length >= 2) {
+    // Trouver l'autre participant
+    const otherParticipants = callData.participants.filter(id => id !== socket.id);
     
-    const callData = activeCalls.get(callCode);
-    if (callData && callData.participants.length >= 2) {
-      // Transmettre l'offre à l'autre participant
-      const otherParticipant = callData.participants.find(id => id !== socket.id);
-      if (otherParticipant) {
-        io.to(otherParticipant).emit('receive-offer', { 
-          offer, 
-          from: socket.id,
-          callCode: callCode
-        });
-        console.log(`📤 Offre transmise à ${otherParticipant}`);
-      }
+    if (otherParticipants.length > 0) {
+      // Envoyer à tous les autres participants
+      otherParticipants.forEach(participantId => {
+        const participantSocket = io.sockets.sockets.get(participantId);
+        if (participantSocket) {
+          participantSocket.emit('receive-offer', { 
+            offer, 
+            from: socket.id,
+            callCode: callCode
+          });
+          console.log(`📤 Offre transmise à ${participantId}`);
+        }
+      });
     }
-  });
+  }
+});
 
-  // Envoyer une réponse WebRTC
-  socket.on('send-answer', ({ callCode, answer }) => {
-    console.log(`📥 Réponse WebRTC reçue pour l'appel ${callCode} de ${socket.id}`);
+// Envoyer une réponse WebRTC - MODIFIÉ
+socket.on('send-answer', ({ callCode, answer }) => {
+  console.log(`📥 Réponse WebRTC reçue pour l'appel ${callCode} de ${socket.id}`);
+  
+  const callData = activeCalls.get(callCode);
+  if (callData && callData.participants.length >= 2) {
+    // Trouver l'autre participant
+    const otherParticipants = callData.participants.filter(id => id !== socket.id);
     
-    const callData = activeCalls.get(callCode);
-    if (callData && callData.participants.length >= 2) {
-      // Transmettre la réponse à l'autre participant
-      const otherParticipant = callData.participants.find(id => id !== socket.id);
-      if (otherParticipant) {
-        io.to(otherParticipant).emit('receive-answer', { 
-          answer, 
-          from: socket.id,
-          callCode: callCode
-        });
-        console.log(`📥 Réponse transmise à ${otherParticipant}`);
-      }
+    if (otherParticipants.length > 0) {
+      // Envoyer à tous les autres participants
+      otherParticipants.forEach(participantId => {
+        const participantSocket = io.sockets.sockets.get(participantId);
+        if (participantSocket) {
+          participantSocket.emit('receive-answer', { 
+            answer, 
+            from: socket.id,
+            callCode: callCode
+          });
+          console.log(`📥 Réponse transmise à ${participantId}`);
+        }
+      });
     }
-  });
+  }
+});
 
-  // Échanger les candidats ICE
-  socket.on('send-ice-candidate', ({ callCode, candidate }) => {
-    const callData = activeCalls.get(callCode);
-    if (callData && callData.participants.length >= 2) {
-      // Transmettre le candidat ICE à l'autre participant
-      const otherParticipant = callData.participants.find(id => id !== socket.id);
-      if (otherParticipant) {
-        io.to(otherParticipant).emit('receive-ice-candidate', { 
-          candidate, 
-          from: socket.id,
-          callCode: callCode
-        });
-      }
+// Échanger les candidats ICE - MODIFIÉ
+socket.on('send-ice-candidate', ({ callCode, candidate }) => {
+  const callData = activeCalls.get(callCode);
+  if (callData && callData.participants.length >= 2) {
+    // Trouver l'autre participant
+    const otherParticipants = callData.participants.filter(id => id !== socket.id);
+    
+    if (otherParticipants.length > 0) {
+      // Envoyer à tous les autres participants
+      otherParticipants.forEach(participantId => {
+        const participantSocket = io.sockets.sockets.get(participantId);
+        if (participantSocket) {
+          participantSocket.emit('receive-ice-candidate', { 
+            candidate, 
+            from: socket.id,
+            callCode: callCode
+          });
+        }
+      });
     }
-  });
-
+  }
+});
   // Gérer la sortie volontaire d'un appel
   socket.on('leave-call', ({ callCode }) => {
     console.log(`🚪 Tentative de quitter l'appel ${callCode} par ${socket.id}`);
