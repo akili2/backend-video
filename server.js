@@ -1,160 +1,82 @@
-const express = require('express');
-const http = require('http');
-const socketIO = require('socket.io');
-const cors = require('cors');
-
+const express = require("express");
 const app = express();
-app.use(cors());
-app.use(express.json());
-
+const http = require("http");
 const server = http.createServer(app);
-const io = socketIO(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+const { Server } = require("socket.io");
+const io = new Server(server);
+
+app.use(express.static("public"));
+
+// Route pour servir la page d'accueil (index.html)
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/public/index.html');
 });
 
-const calls = new Map();
+// Route pour servir la page de chat vidéo (room.html)
+// Cette route doit être définie une seule fois, au démarrage du serveur
+app.get('/room.html', (req, res) => {
+  res.sendFile(__dirname + '/public/room.html');
+});
 
-io.on('connection', (socket) => {
-  console.log('🔌 Connecté:', socket.id);
+io.on("connection", (socket) => {
+  console.log('Un utilisateur s\'est connecté :', socket.id);
 
-  // Créer un appel
-  socket.on('create-call', () => {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    calls.set(code, {
-      creator: socket.id,
-      participants: [socket.id],
-      waiting: null
-    });
-    
-    socket.join(code);
-    socket.emit('call-created', { callCode: code });
-    console.log(`📞 Appel créé: ${code}`);
-  });
+  // Garder une trace de la salle et du nom d'utilisateur pour ce socket
+  let currentRoomId;
+  let currentUsername;
 
-  // Rejoindre un appel
-  socket.on('join-call', ({ callCode }) => {
-    const call = calls.get(callCode);
-    
-    if (!call) {
-      socket.emit('call-not-found');
+  socket.on("join-room", (roomId, username) => {
+    const room = io.sockets.adapter.rooms.get(roomId);
+    const numClients = room ? room.size : 0;
+
+    if (numClients >= 2) {
+      socket.emit('room-full', roomId);
+      console.log(`Salle ${roomId} pleine. ${socket.id} n'a pas pu rejoindre.`);
       return;
     }
-    
-    if (call.participants.length >= 2) {
-      socket.emit('call-full');
-      return;
+
+    socket.join(roomId);
+    currentRoomId = roomId;
+    currentUsername = username;
+
+    console.log(`L'utilisateur ${socket.id} (${username}) a rejoint la salle ${roomId}. Clients dans la salle: ${numClients + 1}`);
+
+    if (numClients === 1) {
+      // Si un autre utilisateur est déjà dans la salle, notifier l'utilisateur existant
+      // que le nouveau s'est connecté pour initier la connexion WebRTC
+      socket.to(roomId).emit('user-connected', socket.id, username);
     }
-    
-    // Mettre en attente
-    call.waiting = socket.id;
-    socket.emit('call-waiting-for-approval');
-    
-    // Notifier le créateur
-    io.to(call.creator).emit('participant-waiting', {
-      participantId: socket.id
+  });
+
+  // Relayer les signaux WebRTC (offre, réponse, candidats ICE)
+  socket.on("signal", (data) => {
+    io.to(data.to).emit("signal", {
+      from: socket.id, // On utilise socket.id comme source fiable
+      signal: data.signal,
     });
-    
-    console.log(`⏳ ${socket.id} en attente pour ${callCode}`);
   });
 
-  // Accepter
-  socket.on('accept-participant', ({ callCode, participantId }) => {
-    const call = calls.get(callCode);
-    if (!call || call.creator !== socket.id) return;
-    
-    call.participants.push(participantId);
-    call.waiting = null;
-    
-    // Faire rejoindre la room
-    io.sockets.sockets.get(participantId)?.join(callCode);
-    
-    // Notifier les deux
-    io.to(callCode).emit('participant-accepted', {
-      participantId,
-      participantCount: 2
-    });
-    
-    console.log(`✅ ${participantId} accepté dans ${callCode}`);
-  });
-
-  // Refuser
-  socket.on('reject-participant', ({ callCode, participantId }) => {
-    const call = calls.get(callCode);
-    if (!call || call.creator !== socket.id) return;
-    
-    call.waiting = null;
-    io.to(participantId).emit('call-rejected');
-    console.log(`❌ ${participantId} refusé`);
-  });
-
-  // WebRTC signaling
-  socket.on('send-offer', ({ callCode, offer }) => {
-    const call = calls.get(callCode);
-    if (!call || call.participants.length < 2) return;
-    
-    const target = call.participants.find(id => id !== socket.id);
-    if (target) {
-      io.to(target).emit('receive-offer', { offer, from: socket.id });
+  // Gérer les messages du chat
+  socket.on("chat-message", (msg) => {
+    if (currentRoomId && currentUsername) {
+      io.to(currentRoomId).emit("chat-message", {
+        username: currentUsername,
+        message: msg,
+      });
     }
   });
 
-  socket.on('send-answer', ({ callCode, answer }) => {
-    const call = calls.get(callCode);
-    if (!call || call.participants.length < 2) return;
-    
-    const target = call.participants.find(id => id !== socket.id);
-    if (target) {
-      io.to(target).emit('receive-answer', { answer, from: socket.id });
-    }
-  });
-
-  socket.on('send-ice-candidate', ({ callCode, candidate }) => {
-    const call = calls.get(callCode);
-    if (!call || call.participants.length < 2) return;
-    
-    const target = call.participants.find(id => id !== socket.id);
-    if (target) {
-      io.to(target).emit('receive-ice-candidate', { candidate, from: socket.id });
-    }
-  });
-
-  // Quitter
-  socket.on('leave-call', ({ callCode }) => {
-    const call = calls.get(callCode);
-    if (call) {
-      call.participants = call.participants.filter(id => id !== socket.id);
-      if (call.participants.length === 0) {
-        calls.delete(callCode);
-      } else {
-        io.to(callCode).emit('participant-left');
-      }
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('🔌 Déconnecté:', socket.id);
-    // Nettoyer les appels
-    for (const [code, call] of calls.entries()) {
-      if (call.participants.includes(socket.id)) {
-        call.participants = call.participants.filter(id => id !== socket.id);
-        if (call.participants.length === 0) {
-          calls.delete(code);
-        } else {
-          io.to(code).emit('participant-left');
-        }
-      }
+  // Gérer la déconnexion de l'utilisateur
+  socket.on("disconnect", () => {
+    console.log('Un utilisateur s\'est déconnecté :', socket.id);
+    if (currentRoomId) {
+      // Notifier les autres utilisateurs que quelqu'un s'est déconnecté
+      socket.to(currentRoomId).emit("user-disconnected", socket.id);
     }
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', calls: calls.size });
-});
-
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Serveur sur le port ${PORT}`);
+  console.log(`Le serveur écoute sur le port ${PORT}`);
 });
