@@ -46,8 +46,8 @@ io.on('connection', (socket) => {
     console.log(`Appel créé: ${callCode} par ${socket.id}`);
   });
 
-  // Rejoindre un appel existant
-  socket.on('join-call', ({ callCode }) => {
+// Mettez à jour la partie 'join-call'
+socket.on('join-call', ({ callCode }) => {
     const callData = activeCalls.get(callCode);
     
     if (!callData) {
@@ -63,16 +63,24 @@ io.on('connection', (socket) => {
     callData.participants.push(socket.id);
     socket.join(callData.callId);
     
-    // Informer le créateur qu'un participant a rejoint
-    socket.to(callData.callId).emit('participant-joined', { participantId: socket.id });
+    // Informer TOUS les participants du nouvel arrivant
+    io.to(callData.callId).emit('participant-joined', { 
+      participantId: socket.id,
+      participantCount: callData.participants.length 
+    });
+    
+    // Envoyer la liste des participants existants au nouveau venu
+    const otherParticipants = callData.participants.filter(id => id !== socket.id);
     
     socket.emit('call-joined', { 
       callId: callData.callId, 
-      creatorId: callData.creator 
+      creatorId: callData.creator,
+      participants: callData.participants,
+      participantCount: callData.participants.length
     });
     
-    console.log(`Participant ${socket.id} a rejoint l'appel ${callCode}`);
-  });
+    console.log(`Participant ${socket.id} a rejoint l'appel ${callCode}. Total: ${callData.participants.length}`);
+});
 
   // Envoyer une offre WebRTC
   socket.on('send-offer', ({ callCode, offer }) => {
@@ -150,4 +158,24 @@ app.get('/api/verify-call/:callCode', (req, res) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Serveur backend en écoute sur le port ${PORT}`);
+});
+// Ajoutez cette partie dans le backend
+socket.on('leave-call', ({ callCode }) => {
+  const callData = activeCalls.get(callCode);
+  if (callData) {
+    // Retirer le participant
+    callData.participants = callData.participants.filter(id => id !== socket.id);
+    
+    if (callData.participants.length === 0) {
+      // Supprimer l'appel si plus de participants
+      activeCalls.delete(callCode);
+      console.log(`Appel ${callCode} supprimé (plus de participants)`);
+    } else {
+      // Informer les autres participants
+      socket.to(callData.callId).emit('participant-left', { 
+        participantId: socket.id,
+        participantCount: callData.participants.length
+      });
+    }
+  }
 });
